@@ -12,6 +12,10 @@ jobs:
           command: |
             docker build -t esp-rs .
       - run:
-          name: Test image
+          name: Test esp8266 project
           command: |
-            docker run esp-rs /bin/bash -c "USER=tester ./build.sh test"
+            docker run esp-rs /bin/bash -c "USER=tester ARCH=esp8266 ./build.sh testproj-esp8266"
+      - run:
+          name: Test esp32 project
+          command: |
+            docker run esp-rs /bin/bash -c "USER=tester ARCH=esp32 ./build.sh testproj-esp32"

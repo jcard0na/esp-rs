@@ -15,4 +15,5 @@ COPY . /build/esp-rs
 
 WORKDIR /build/esp-rs
 
-RUN ./build.sh --install
+RUN ARCH=esp8266 ./build.sh --install
+RUN ARCH=esp32 ./build.sh --install

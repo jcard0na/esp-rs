@@ -2,14 +2,42 @@
 
 set -e -u -o pipefail
 
-readonly MRUSTC_VER='b5b7089'
-readonly SDK_VER='2.4.1'
-
-readonly INSTALL_DIR="${HOME}/.esp-rs"
-readonly MRUSTC_DIR="${INSTALL_DIR}/mrustc"
-readonly SDK_ROOT="${INSTALL_DIR}/esp8266-arduino"
-readonly TOOLCHAIN_ROOT="${HOME}/.platformio/packages/toolchain-xtensa"
 readonly PROJECT_DIR="${PWD}"
+
+function config_arch() {
+    case "${ARCH}" in
+    esp32)
+        readonly INSTALL_DIR="${HOME}/.esp-rs-esp32"
+        readonly MRUSTC_DIR="${INSTALL_DIR}/mrustc"
+        readonly MRUSTC_VER='f35465d'
+        readonly SDK_VER='79e5d4c'
+        readonly SDK_ROOT="${INSTALL_DIR}/esp32-arduino"
+        readonly TOOLCHAIN_ROOT="${HOME}/.platformio/packages/toolchain-xtensa32"
+        readonly ARDUINO_SDK="https://github.com/espressif/arduino-esp32.git"
+        readonly PLATFORMIO_ARCH='espressif32'
+        readonly PLATFORMIO_BOARD='esp32dev'
+        readonly XTENSA_ARCH='esp32'
+        readonly XTENSA_VERSION='5.2.0'
+        ;;
+
+    esp8266)
+        readonly INSTALL_DIR="${HOME}/.esp-rs-esp8266"
+        readonly MRUSTC_DIR="${INSTALL_DIR}/mrustc"
+        readonly MRUSTC_VER='b5b7089'
+        readonly SDK_VER='2.4.1'
+        readonly SDK_ROOT="${INSTALL_DIR}/esp8266-arduino"
+        readonly TOOLCHAIN_ROOT="${HOME}/.platformio/packages/toolchain-xtensa"
+        readonly ARDUINO_SDK="https://github.com/esp8266/Arduino.git"
+        readonly PLATFORMIO_ARCH='espressif8266'
+        readonly PLATFORMIO_BOARD='nodemcuv2'
+        readonly XTENSA_ARCH='lx106'
+        readonly XTENSA_VERSION='4.8.2'
+        ;;
+    *)
+        echo $"Usage: ARCH=[esp32|esp8266] $0 [--install]"
+        exit 1
+    esac
+}
 
 function main() {
     if [[ "${1:-}" == '--install' ]]; then
@@ -49,7 +77,7 @@ function install_toolchain() {
     fi
     if ! which rustfmt &>/dev/null; then
         echo 'Installing rustfmt...'
-        rustup component add rustfmt-preview
+        rustup component add rustfmt
     fi
     if ! which cargo-vendor &>/dev/null; then
         echo 'Installing cargo-vendor...'
@@ -66,10 +94,10 @@ function install_toolchain() {
     checkout_git_revision 'https://github.com/thepowersgang/mrustc.git' "${MRUSTC_VER}" "${MRUSTC_DIR}" 'mrustc'
     echo "Building mrustc/minicargo@${MRUSTC_VER}"
     ( cd "${MRUSTC_DIR}" && make RUSTCSRC && make -f minicargo.mk PARLEVEL=$(nproc) LIBS )
-    checkout_git_revision 'https://github.com/esp8266/Arduino.git' "${SDK_VER}" "${SDK_ROOT}" 'ESP8266 Arduino SDK'
+    checkout_git_revision ${ARDUINO_SDK} "${SDK_VER}" "${SDK_ROOT}" 'ESP Arduino SDK'
     if ! [[ -d "${TOOLCHAIN_ROOT}" ]]; then
-        echo 'Installing PlatformIO ESP8266 Arduino SDK...'
-        platformio platform install espressif8266
+        echo "Installing PlatformIO ${PLATFORMIO_ARCH} Arduino SDK..."
+        platformio platform install ${PLATFORMIO_ARCH}
     fi
 }
 
@@ -92,10 +120,10 @@ function checkout_git_revision() {
 function init_project() {
     if ! [[ -e platformio.ini ]]; then
         echo 'Initializing PlatformIO project...'
-        platformio init -b nodemcuv2
+        platformio init -b ${PLATFORMIO_BOARD}
     fi
     if ! [[ -e .esp-rs-compiled-lib ]]; then
-        ln -s .pioenvs/nodemcuv2/libc72 .esp-rs-compiled-lib
+        ln -s .pioenvs/${PLATFORMIO_BOARD}/libc72 .esp-rs-compiled-lib
     fi
     if ! grep -q libgenerated platformio.ini; then
         echo "build_flags = '-L.esp-rs-compiled-lib -llibgenerated'" >> platformio.ini
@@ -104,6 +132,7 @@ function init_project() {
         echo 'Initializing Cargo project...'
         cargo init
         echo 'embedded-hal = { version = "0.2.1", features = ["unproven"] }' >> Cargo.toml
+        # Hoping that this hal also works for ESP32...
         echo 'esp8266-hal = "0.0.1"' >> Cargo.toml
         echo 'libc = { version = "=0.2.42", default-features = false }' >> Cargo.toml
     fi
@@ -233,6 +262,7 @@ EOF
         python2 - <(platformio run -t idedata) <<'EOF'
 import json
 import sys
+import re
 
 with open(sys.argv[1]) as input:
     for line in input:
@@ -240,9 +270,12 @@ with open(sys.argv[1]) as input:
             data = json.loads(line)
             for include in data['includes']:
                 print '-I' + include
-            for flag in data['cxx_flags'].split():
-                if flag[:2] != '-m':
-                    print flag
+            for flag in re.split('(?<!\\\\) ').split(data['cxx_flags']):
+                if flag == '-fstrict-volatile-bitfields':
+                    continue
+                if flag[:2] == '-m':
+                   continue
+                print flag
             break
 EOF
     )
@@ -261,12 +294,14 @@ EOF
               && grep '^#include ' "${PROJECT_DIR}/src/main.ino" \
                   | grep -ve '"generated/.*\.hir.o.c"' ) \
            -- \
+           -v \
+           -std=c++11 \
            -x c++ \
            -nostdinc \
            -m32 \
-           -I"${TOOLCHAIN_ROOT}/xtensa-lx106-elf/include/c++/4.8.2" \
-           -I"${TOOLCHAIN_ROOT}/xtensa-lx106-elf/include/c++/4.8.2/xtensa-lx106-elf" \
-           -Itools/sdk/libc/xtensa-lx106-elf/include \
+           -I"${TOOLCHAIN_ROOT}/xtensa-${XTENSA_ARCH}-elf/include/c++/${XTENSA_VERSION}" \
+           -I"${TOOLCHAIN_ROOT}/xtensa-${XTENSA_ARCH}-elf/include/c++/${XTENSA_VERSION}/xtensa-${XTENSA_ARCH}-elf" \
+           -Itools/sdk/libc/xtensa-${XTENSA_ARCH}-elf/include \
            "${extra_args[@]}" )
     # TODO: Figure out how to automatically derive the hardcoded -I flags above
 }
@@ -296,4 +331,6 @@ function compile_with_platformio() {
     platformio run
 }
 
+test -n "${ARCH+x}" || { echo "Set ARCH to esp32 or esp8266 and retry"; exit 1; }
+config_arch
 main "$@"
